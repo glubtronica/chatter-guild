@@ -524,4 +524,195 @@ public sealed class Player
 
         // Raw averages in 0..1
         double I = (double)sumS / (Turns * 10.0); // Structure -> Initiator
-        double L = (double)sum
+        double L = (double)sumR / (Turns * 10.0); // Reciprocity -> Listener
+        double C = (double)sumE / (Turns * 10.0); // Elevation  -> Challenger
+
+        double total = I + L + C;
+        if (total <= 1e-9) total = 1.0;
+
+        return (I / total, L / total, C / total);
+    }
+
+    public void AwardDisciplineXP(double kpiScore100)
+    {
+        int baseXp = BaseXPFromKpi(kpiScore100);
+
+        if (baseXp == 0)
+        {
+            Console.WriteLine("    (No XP: raise KPI score to earn progression in Challenge Mode.)");
+            return;
+        }
+
+        var v = SessionVectorILC();
+        var sessionVec = new Vec3(v.I, v.L, v.C);
+
+        bool any = false;
+        foreach (var d in Disciplines.Values)
+        {
+            double sim = Vec3.Cosine(sessionVec, d.Target);
+            if (sim >= 0.82)
+            {
+                int gain = (int)Math.Round(baseXp * sim);
+                d.AddXP(gain);
+                any = true;
+                Console.WriteLine($"    {d.Name,-12} +{gain} XP  (sim {sim:0.00})  Lv {d.Level}  XP {d.XP}/{d.NextThreshold()}");
+            }
+        }
+
+        if (!any)
+            Console.WriteLine("    (No discipline matched strongly — try leaning into a style for a few turns.)");
+    }
+
+    static int BaseXPFromKpi(double kpiScore100)
+    {
+        if (kpiScore100 < 55) return 0;
+        if (kpiScore100 < 70) return 25;
+        if (kpiScore100 < 85) return 45;
+        return 65;
+    }
+
+    static double Clamp01(double x) => x < 0 ? 0 : (x > 1 ? 1 : x);
+}
+
+// ---------------------------
+// DISCIPLINES (XP)
+// ---------------------------
+public sealed class Discipline
+{
+    public string Name;
+    public Vec3 Target;
+    public int XP;
+    public int Level;
+
+    public Discipline(string name, Vec3 target)
+    {
+        Name = name;
+        Target = target;
+        Level = 1;
+        XP = 0;
+    }
+
+    public int NextThreshold() => 100 + (Level - 1) * 40;
+
+    public void AddXP(int amount)
+    {
+        XP += Math.Max(0, amount);
+        while (XP >= NextThreshold())
+        {
+            XP -= NextThreshold();
+            Level++;
+        }
+    }
+
+    public static Dictionary<string, Discipline> DefaultSet()
+    {
+        return new Dictionary<string, Discipline>
+        {
+            { "Medium",      new Discipline("Medium",      new Vec3(0.45,0.45,0.10)) },
+            { "Sniper",      new Discipline("Sniper",      new Vec3(0.15,0.45,0.40)) },
+            { "Provocateur", new Discipline("Provocateur", new Vec3(0.45,0.10,0.45)) },
+            { "Harmonizer",  new Discipline("Harmonizer",  new Vec3(0.30,0.50,0.20)) },
+            { "Clarifier",   new Discipline("Clarifier",   new Vec3(0.20,0.40,0.40)) },
+            { "Architect",   new Discipline("Architect",   new Vec3(0.33,0.33,0.33)) }
+        };
+    }
+}
+
+public struct Vec3
+{
+    public double X, Y, Z;
+    public Vec3(double x, double y, double z) { X = x; Y = y; Z = z; }
+
+    public static double Dot(Vec3 a, Vec3 b) => a.X * b.X + a.Y * b.Y + a.Z * b.Z;
+    public static double Mag(Vec3 v) => Math.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
+
+    public static double Cosine(Vec3 a, Vec3 b)
+    {
+        double denom = Mag(a) * Mag(b);
+        if (denom <= 1e-12) return 0;
+        return Dot(a, b) / denom;
+    }
+}
+
+// ---------------------------
+// TEXT UTIL
+// ---------------------------
+public static class TextUtil
+{
+    static readonly char[] Splitters = new[] { ' ', '\t', '\r', '\n' };
+
+    public static int WordCount(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return 0;
+        return s.Split(Splitters, StringSplitOptions.RemoveEmptyEntries).Length;
+    }
+
+    public static bool HasPunctuation(string s)
+        => (s ?? "").IndexOfAny(new[] { '.', ',', ';', ':', '-', '!' }) >= 0;
+
+    public static bool ContainsDigit(string s)
+    {
+        foreach (char c in s) if (c >= '0' && c <= '9') return true;
+        return false;
+    }
+
+    public static List<string> Tokenize(string lower)
+    {
+        var parts = (lower ?? "").ToLowerInvariant()
+            .Split(Splitters, StringSplitOptions.RemoveEmptyEntries);
+
+        var toks = new List<string>(parts.Length);
+        foreach (var raw in parts)
+        {
+            string t = Clean(raw);
+            if (t.Length > 0) toks.Add(t);
+        }
+        return toks;
+    }
+
+    static string Clean(string s)
+    {
+        if (s == null) return "";
+        return s.Trim().Trim(',', '.', '!', '?', ';', ':', '"', '\'', '(', ')', '[', ']', '{', '}', '<', '>', '-', '_');
+    }
+
+    public static HashSet<string> KeyTokenSet(string text)
+    {
+        var set = new HashSet<string>();
+        foreach (var t in Tokenize((text ?? "").ToLowerInvariant()))
+            if (t.Length >= 4) set.Add(t);
+        return set;
+    }
+
+    public static List<string> KeyTokens(string text)
+        => KeyTokenSet(text).Take(8).ToList();
+
+    public static int OverlapCount(HashSet<string> a, HashSet<string> b)
+    {
+        if (a == null || b == null || a.Count == 0 || b.Count == 0) return 0;
+        int c = 0;
+        foreach (var x in a) if (b.Contains(x)) c++;
+        return c;
+    }
+
+    public static void PushTopicWindow(Queue<HashSet<string>> q, HashSet<string> tokens, int maxWindows)
+    {
+        q.Enqueue(tokens ?? new HashSet<string>());
+        while (q.Count > maxWindows) q.Dequeue();
+    }
+
+    public static double RepeatedTokenRatio(string msgLower, HashSet<string> stop)
+    {
+        var toks = Tokenize(msgLower).Where(t => t.Length >= 3 && (stop == null || !stop.Contains(t))).ToList();
+        if (toks.Count < 6) return 0.0;
+
+        var freq = new Dictionary<string, int>();
+        foreach (var t in toks)
+        {
+            if (!freq.ContainsKey(t)) freq[t] = 0;
+            freq[t]++;
+        }
+        int max = freq.Values.Max();
+        return (double)max / toks.Count;
+    }
+}
